@@ -1,0 +1,9 @@
+# Ignore local VS Code workspace configurations and caches
+.vscode/
+
+# Ignore python environment and caches (from earlier step)
+venv/
+.venv/
+env/
+**/__pycache__/
+*.pyc
