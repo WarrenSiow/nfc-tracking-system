@@ -11,8 +11,8 @@ import tkinter as tk
 from tkinter import messagebox
 
 # --- Credentials ---
-# NOTION_TOKEN = ""
-# DATABASE_ID = ""
+NOTION_TOKEN = "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"
+DATABASE_ID = "372c2c61e2bb80709de3d2e0349661c3"
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
