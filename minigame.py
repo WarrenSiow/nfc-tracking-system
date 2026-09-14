@@ -5,8 +5,7 @@ import random
 
 # 1. Initialize Serial Communication
 try:
-    # Adjusted to /dev/ttyUSB0 for your new Linux setup
-    ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.1)
+    ser = serial.Serial('/dev/input/by-id/event6', 115200, timeout=0.1)
 except Exception as e:
     print(f"Error opening serial port: {e}")
     sys.exit()
