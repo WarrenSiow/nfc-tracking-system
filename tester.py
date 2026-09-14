@@ -1,9 +1,7 @@
 from datetime import datetime
-from logging import root
 from colorama import init, Fore, Style
+from evdev import InputDevice, ecodes
 import requests
-import select
-import sys
 import sqlite3
 import time
 import threading
@@ -22,8 +20,17 @@ HEADERS = {
 
 init(autoreset=True)
 
+# --- NFC Hardware Path & Key Mapping ---
+NFC_DEVICE_PATH = '/dev/input/by-id/usb-IC_Reader_IC_Reader_08FF20171101-event-kbd'
+
+KEY_MAP = {
+    'KEY_0': '0', 'KEY_1': '1', 'KEY_2': '2', 'KEY_3': '3', 'KEY_4': '4',
+    'KEY_5': '5', 'KEY_6': '6', 'KEY_7': '7', 'KEY_8': '8', 'KEY_9': '9',
+    'KEY_A': 'A', 'KEY_B': 'B', 'KEY_C': 'C', 'KEY_D': 'D', 'KEY_E': 'E', 'KEY_F': 'F'
+}
+
 # --- Database Initialization ---
-con = sqlite3.connect("inventory.db", check_same_thread=False)  # Allowed multi-thread usage for GUI
+con = sqlite3.connect("inventory.db", check_same_thread=False)
 con.row_factory = sqlite3.Row
 cur = con.cursor()
 
@@ -38,7 +45,7 @@ class KioskApp:
         self.root = root
         self.root.title("NFC Inventory Kiosk")
         self.root.geometry("1024x600")
-        # self.root.attributes('-fullscreen', True) # Uncomment for headless Pi deployment
+        # self.root.attributes('-fullscreen', True) # Uncomment for full kiosk mode
         self.root.configure(bg="#1e1e2e")
 
         # Runtime Data Context
@@ -54,7 +61,7 @@ class KioskApp:
         self.show_standby_screen()
 
         # Start background hardware monitoring thread
-        self.hardware_thread = threading.Thread(target=run_backend_logic, args=(self,),daemon=True)
+        self.hardware_thread = threading.Thread(target=run_backend_logic, args=(self,), daemon=True)
         self.hardware_thread.start()
 
     def clear_view(self):
@@ -80,7 +87,6 @@ class KioskApp:
         grid_frame = tk.Frame(self.view_frame, bg="#1e1e2e")
         grid_frame.pack(expand=True)
 
-        # Large finger-friendly choices
         return_destinations = ['Programming', 'Electronics', 'Mechanism', 'Inventory']
         borrow_destinations = ['KDSE', 'Used in Robot', 'Used by member']
 
@@ -97,7 +103,7 @@ class KioskApp:
 
     def submit_destination(self, dest):
         self.chosen_destination = dest
-        self.selection_ready.set()  # Notify backend loop to resume execution
+        self.selection_ready.set()
 
     def flash_success(self, msg):
         messagebox.showinfo("Success", msg)
@@ -120,7 +126,7 @@ def sync_to_notion(item_name, item_type, destination, user_name, action, timesta
         }
     }
     try:
-        response = requests.post(url, headers=HEADERS, json=payload)
+        response = requests.post(url, headers=HEADERS, json=payload, timeout=5)
         if response.status_code == 200:
             print(f"{Fore.GREEN}Successfully synced to Notion{Style.RESET_ALL}")
         else: 
@@ -128,57 +134,89 @@ def sync_to_notion(item_name, item_type, destination, user_name, action, timesta
     except Exception as e:
         print(f"{Fore.RED}Error syncing to Notion: {e}{Style.RESET_ALL}")
 
-def timed_input(prompt, timeout=15):
-    print(prompt, end='', flush=True)
-    ready, _, _ = select.select([sys.stdin], [], [], timeout)
-    if ready:
-        return sys.stdin.readline().strip()
-    else:
-        print(f"\n{Fore.RED}Timeout reached{Style.RESET_ALL}")
-        return None
+# --- Non-blocking evdev NFC Scanner Helper ---
+def scan_nfc_tag(dev, timeout=15):
+    """Intermits background NFC scans directly from evdev hardware interface."""
+    tag_buffer = ""
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        try:
+            for ev in dev.read():
+                if ev.type == ecodes.EV_KEY and ev.value == 1:
+                    key = ecodes.KEY[ev.code]
+                    if key == 'KEY_ENTER':
+                        return tag_buffer.strip()
+                    elif key in KEY_MAP:
+                        tag_buffer += KEY_MAP[key]
+        except BlockingIOError:
+            pass
+        time.sleep(0.02)
+    return None
 
 def run_backend_logic(app):
+    # Connect directly to hardware device
+    try:
+        reader = InputDevice(NFC_DEVICE_PATH)
+        reader.grab()  # Captures scan events exclusively without typing into active terminal windows
+        print(f"{Fore.GREEN}Hardware Reader Active: {reader.name}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}Error opening hardware NFC reader: {e}{Style.RESET_ALL}")
+        app.root.after(0, lambda: app.show_error("NFC Reader Hardware Error"))
+        return
+
     while True:        
         print(Fore.BLUE + "\n--- NFC Inventory Management System ---")
-        item_id = input("Scan Item Tag: ").strip()
+        print("Waiting for Item Scan...")
+        
+        # 1. Capture Item Scan
+        item_id = scan_nfc_tag(reader, timeout=60)
+        if not item_id:
+            continue
+            
         item = cur.execute("SELECT * FROM inventory WHERE rfid=?", (item_id,)).fetchone()
-
         if not item:
-            app.show_error("No item found with this tag")
-            print(f"{Fore.RED}No item found with this tag{Style.RESET_ALL}")
+            app.root.after(0, lambda: app.show_error("No item found with this tag"))
+            print(f"{Fore.RED}No item found with tag: {item_id}{Style.RESET_ALL}")
+            time.sleep(2)
             continue
+            
         print(f"Found Item: {item['item_name']} [Status: {item['status']}]")
+        print(Fore.CYAN + "Waiting for User Badge Scan...")
 
-        user_id = timed_input(Fore.CYAN + "Scan User Tag: ", timeout=15)
+        # 2. Capture User Scan
+        user_id = scan_nfc_tag(reader, timeout=15)
         if not user_id:
+            app.root.after(0, app.show_standby_screen)
+            print(f"{Fore.RED}User scan timed out.{Style.RESET_ALL}")
             continue
+            
         user = cur.execute("SELECT * FROM user WHERE id=?", (user_id,)).fetchone()
-
         if not user:
-            app.show_error("No authorized user found with this badge")
-            print(f"{Fore.RED}No authorized user found with this badge{Style.RESET_ALL}")
+            app.root.after(0, lambda: app.show_error("No authorized user found with this badge"))
+            print(f"{Fore.RED}No authorized user found with badge: {user_id}{Style.RESET_ALL}")
+            time.sleep(2)
             continue
 
         print(f"Found User: {user['name']} [Access Level: {user['access_level']}]")
 
         log = cur.execute("SELECT * FROM logs WHERE item_name=? ORDER BY timestamp DESC", (item['item_name'],)).fetchone()
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
+        # 3. Process Transaction
         match item['status']:
             case 'In Storage':
-                if (user['access_level'] < item['access_level']):
-                    app.show_error("You don't have access to borrow this item")
+                if user['access_level'] < item['access_level']:
+                    app.root.after(0, lambda: app.show_error("You don't have access to borrow this item"))
                 else:
-                    # 🚀 INTERFACE TRIGGER: Ask user for destination via touch panel
                     app.selection_ready.clear()
                     app.root.after(0, lambda: app.show_destination_menu('BORROWED'))
                     
-                    # Wait for UI touch event acknowledgment
                     if not app.selection_ready.wait(timeout=30):
                         print(f"{Fore.RED}User interaction timeout.{Style.RESET_ALL}")
                         app.root.after(0, app.show_standby_screen)
                         continue
-                    
+                        
                     dest = app.chosen_destination
                     cur.execute("UPDATE inventory SET status=?, destination=? WHERE rfid=?", (dest, dest, item['rfid']))
                     cur.execute("INSERT INTO logs VALUES(?, ?, ?, ?)", (current_time, item['item_name'], user['name'], 'BORROWED'))
@@ -188,19 +226,17 @@ def run_backend_logic(app):
                     app.root.after(0, lambda d=dest: app.flash_success(f"Item checked out to {d}!"))
                     sync_to_notion(item['item_name'], item['type'], dest, user['name'], 'BORROWED', current_time)
 
-            case _:  # Treated as a Return path if status is Checked Out / any active location
+            case _:
                 if not log:
-                    app.show_error("No active log entry found for this item")
+                    app.root.after(0, lambda: app.show_error("No active log entry found for this item"))
                     print(f"{Fore.RED}System Error: No active log entry found{Style.RESET_ALL}")
                 elif log['user_name'] != user['name']:
-                    app.show_error("Wrong User tried returning item")
+                    app.root.after(0, lambda: app.show_error("Wrong User tried returning item"))
                 else:
-                    # 🚀 INTERFACE TRIGGER: Ask user for return target via touch panel
                     app.selection_ready.clear()
                     app.root.after(0, lambda: app.show_destination_menu('RETURNED'))
                     
                     if not app.selection_ready.wait(timeout=30):
-                        app.show_error("User interaction timeout")
                         print(f"{Fore.RED}User interaction timeout.{Style.RESET_ALL}")
                         app.root.after(0, app.show_standby_screen)
                         continue
@@ -213,6 +249,7 @@ def run_backend_logic(app):
                     print(f"{Fore.GREEN}Item Returned Successfully to {dest}{Style.RESET_ALL}")
                     app.root.after(0, lambda d=dest: app.flash_success(f"Item returned safely to {d}!"))
                     sync_to_notion(item['item_name'], item['type'], dest, user['name'], 'RETURNED', current_time)
+                    
         time.sleep(2)
 
 def main():
