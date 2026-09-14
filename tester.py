@@ -1,6 +1,5 @@
 from datetime import datetime
 from colorama import init, Fore, Style
-from evdev import InputDevice, ecodes
 import requests
 import sqlite3
 import time
@@ -20,15 +19,6 @@ HEADERS = {
 
 init(autoreset=True)
 
-# --- NFC Hardware Path & Key Mapping ---
-NFC_DEVICE_PATH = '/dev/input/by-id/usb-IC_Reader_IC_Reader_08FF20171101-event-kbd'
-
-KEY_MAP = {
-    'KEY_0': '0', 'KEY_1': '1', 'KEY_2': '2', 'KEY_3': '3', 'KEY_4': '4',
-    'KEY_5': '5', 'KEY_6': '6', 'KEY_7': '7', 'KEY_8': '8', 'KEY_9': '9',
-    'KEY_A': 'A', 'KEY_B': 'B', 'KEY_C': 'C', 'KEY_D': 'D', 'KEY_E': 'E', 'KEY_F': 'F'
-}
-
 # --- Database Initialization ---
 con = sqlite3.connect("inventory.db", check_same_thread=False)
 con.row_factory = sqlite3.Row
@@ -45,7 +35,6 @@ class KioskApp:
         self.root = root
         self.root.title("NFC Inventory Kiosk")
         self.root.geometry("1024x600")
-        # self.root.attributes('-fullscreen', True) # Uncomment for full kiosk mode
         self.root.configure(bg="#1e1e2e")
 
         # Runtime Data Context
@@ -53,6 +42,14 @@ class KioskApp:
         self.active_user = None
         self.selection_ready = threading.Event()
         self.chosen_destination = None
+
+        # Key Capture Buffer (Keeps GUI focused & receives USB keyboard swipes)
+        self.scan_buffer = ""
+        self.scan_ready_event = threading.Event()
+        self.latest_scanned_tag = ""
+
+        # Bind all keyboard events directly to Tkinter window focus
+        self.root.bind("<Key>", self.handle_keypress)
 
         # Main Interface Viewport Frame
         self.view_frame = tk.Frame(self.root, bg="#1e1e2e")
@@ -63,6 +60,23 @@ class KioskApp:
         # Start background hardware monitoring thread
         self.hardware_thread = threading.Thread(target=run_backend_logic, args=(self,), daemon=True)
         self.hardware_thread.start()
+
+    def handle_keypress(self, event):
+        """Captures hardware USB keyboard scans when Tkinter window is focused."""
+        if event.keysym == 'Return':
+            if self.scan_buffer.strip():
+                self.latest_scanned_tag = self.scan_buffer.strip()
+                self.scan_buffer = ""
+                self.scan_ready_event.set()
+        elif len(event.char) == 1 and event.char.isprintable():
+            self.scan_buffer += event.char
+
+    def wait_for_scan(self, timeout=30):
+        """Thread-safe wait for next tag scan from focused GUI window."""
+        self.scan_ready_event.clear()
+        if self.scan_ready_event.wait(timeout=timeout):
+            return self.latest_scanned_tag
+        return None
 
     def clear_view(self):
         for widget in self.view_frame.winfo_children():
@@ -134,64 +148,34 @@ def sync_to_notion(item_name, item_type, destination, user_name, action, timesta
     except Exception as e:
         print(f"{Fore.RED}Error syncing to Notion: {e}{Style.RESET_ALL}")
 
-# --- Non-blocking evdev NFC Scanner Helper ---
-def scan_nfc_tag(dev, timeout=15):
-    """Intermits background NFC scans directly from evdev hardware interface."""
-    tag_buffer = ""
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        try:
-            for ev in dev.read():
-                if ev.type == ecodes.EV_KEY and ev.value == 1:
-                    key = ecodes.KEY[ev.code]
-                    if key == 'KEY_ENTER':
-                        return tag_buffer.strip()
-                    elif key in KEY_MAP:
-                        tag_buffer += KEY_MAP[key]
-        except BlockingIOError:
-            pass
-        time.sleep(0.02)
-    return None
-
 def run_backend_logic(app):
-    # Connect directly to hardware device
-    try:
-        reader = InputDevice(NFC_DEVICE_PATH)
-        reader.grab()  # Captures scan events exclusively without typing into active terminal windows
-        print(f"{Fore.GREEN}Hardware Reader Active: {reader.name}{Style.RESET_ALL}")
-    except Exception as e:
-        print(f"{Fore.RED}Error opening hardware NFC reader: {e}{Style.RESET_ALL}")
-        app.root.after(0, lambda: app.show_error("NFC Reader Hardware Error"))
-        return
-
     while True:        
         print(Fore.BLUE + "\n--- NFC Inventory Management System ---")
-        print("Waiting for Item Scan...")
+        print("Waiting for Item Scan (Scan on focused Kiosk Window)...")
         
-        # 1. Capture Item Scan
-        item_id = scan_nfc_tag(reader, timeout=60)
+        # Capture Item Tag via Tkinter Event Listener
+        item_id = app.wait_for_scan(timeout=60)
         if not item_id:
             continue
-            
+
         item = cur.execute("SELECT * FROM inventory WHERE rfid=?", (item_id,)).fetchone()
+
         if not item:
             app.root.after(0, lambda: app.show_error("No item found with this tag"))
             print(f"{Fore.RED}No item found with tag: {item_id}{Style.RESET_ALL}")
             time.sleep(2)
             continue
-            
         print(f"Found Item: {item['item_name']} [Status: {item['status']}]")
-        print(Fore.CYAN + "Waiting for User Badge Scan...")
 
-        # 2. Capture User Scan
-        user_id = scan_nfc_tag(reader, timeout=15)
+        print(Fore.CYAN + "Scan User Badge: ")
+        user_id = app.wait_for_scan(timeout=15)
         if not user_id:
             app.root.after(0, app.show_standby_screen)
             print(f"{Fore.RED}User scan timed out.{Style.RESET_ALL}")
             continue
-            
+
         user = cur.execute("SELECT * FROM user WHERE id=?", (user_id,)).fetchone()
+
         if not user:
             app.root.after(0, lambda: app.show_error("No authorized user found with this badge"))
             print(f"{Fore.RED}No authorized user found with badge: {user_id}{Style.RESET_ALL}")
@@ -202,8 +186,7 @@ def run_backend_logic(app):
 
         log = cur.execute("SELECT * FROM logs WHERE item_name=? ORDER BY timestamp DESC", (item['item_name'],)).fetchone()
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # 3. Process Transaction
+        
         match item['status']:
             case 'In Storage':
                 if user['access_level'] < item['access_level']:
@@ -216,7 +199,7 @@ def run_backend_logic(app):
                         print(f"{Fore.RED}User interaction timeout.{Style.RESET_ALL}")
                         app.root.after(0, app.show_standby_screen)
                         continue
-                        
+                    
                     dest = app.chosen_destination
                     cur.execute("UPDATE inventory SET status=?, destination=? WHERE rfid=?", (dest, dest, item['rfid']))
                     cur.execute("INSERT INTO logs VALUES(?, ?, ?, ?)", (current_time, item['item_name'], user['name'], 'BORROWED'))
@@ -249,7 +232,6 @@ def run_backend_logic(app):
                     print(f"{Fore.GREEN}Item Returned Successfully to {dest}{Style.RESET_ALL}")
                     app.root.after(0, lambda d=dest: app.flash_success(f"Item returned safely to {d}!"))
                     sync_to_notion(item['item_name'], item['type'], dest, user['name'], 'RETURNED', current_time)
-                    
         time.sleep(2)
 
 def main():
