@@ -24,9 +24,9 @@ con = sqlite3.connect("inventory.db", check_same_thread=False)
 con.row_factory = sqlite3.Row
 cur = con.cursor()
 
-cur.execute("CREATE TABLE IF NOT EXISTS inventory(rfid TEXT PRIMARY KEY, item_id TEXT, item_name TEXT, type TEXT, status TEXT, destination TEXT, access_level INTEGER)")
-cur.execute("CREATE TABLE IF NOT EXISTS user(id TEXT PRIMARY KEY, name TEXT, access_level INTEGER)")
-cur.execute("CREATE TABLE IF NOT EXISTS logs(timestamp TEXT, item_name TEXT, user_name TEXT, action TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS inventory(rfid TEXT PRIMARY KEY, item_id TEXT, type TEXT, status TEXT, current_location TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS user(id TEXT PRIMARY KEY, name TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS logs(timestamp TEXT, item_id TEXT, user_name TEXT, action TEXT)")
 con.commit()
 
 # --- Tkinter Kiosk UI Class ---
@@ -43,7 +43,7 @@ class KioskApp:
         self.selection_ready = threading.Event()
         self.chosen_destination = None
 
-        # Key Capture Buffer (Keeps GUI focused & receives USB keyboard swipes)
+        # Key Capture Buffer
         self.scan_buffer = ""
         self.scan_ready_event = threading.Event()
         self.latest_scanned_tag = ""
@@ -95,16 +95,16 @@ class KioskApp:
     def show_destination_menu(self, mode):
         self.clear_view()
 
-        title_text = "📍 Where is this item going?" if mode == 'BORROWED' else "📥 Where are you returning this item to?"
+        title_text = "📍 Where is this item going?" if mode == 'Borrowing' else "📥 Where are you returning this item to?"
         tk.Label(self.view_frame, text=title_text, font=("Helvetica", 24, "bold"), fg="#89b4fa", bg="#1e1e2e").pack(pady=30)
 
         grid_frame = tk.Frame(self.view_frame, bg="#1e1e2e")
         grid_frame.pack(expand=True)
 
-        return_destinations = ['Programming', 'Electronics', 'Mechanism', 'Inventory']
-        borrow_destinations = ['KDSE', 'Used in Robot', 'Used by member']
+        return_destinations = ['Drawer', 'Safe']
+        borrow_destinations = ['Robot', 'Testing']
 
-        destinations = borrow_destinations if mode == 'BORROWED' else return_destinations
+        destinations = borrow_destinations if mode == 'Borrowing' else return_destinations
 
         for i, dest in enumerate(destinations):
             row, col = i // 4, i % 4
@@ -124,19 +124,20 @@ class KioskApp:
         self.show_standby_screen()
 
 # --- Cloud Sync Engine ---
-def sync_to_notion(item_name, item_type, destination, user_name, action, timestamp):
+def sync_to_notion(item_name, item_type, status, taken_by, from_, to_, timestamp):
     url = "https://api.notion.com/v1/pages"
     iso_timestamp = timestamp.replace(" ", "T")
 
     payload = {
         "parent": {"database_id": DATABASE_ID},
         "properties": {
-            "Item Name": {"title": [{"text": {"content": item_name}}]},
-            "web": {"rich_text": [{"text": {"content": str(item_type or 'N/A')}}]},
-            "Status": {"rich_text": [{"text": {"content": str(destination or 'N/A')}}]},
-            "Action": {"rich_text": [{"text": {"content": action}}]},
-            "TimeStamp": {"date": {"start": iso_timestamp}},
-            "User Name": {"rich_text": [{"text": {"content": user_name}}]}
+            "Item ID": {"title": [{"text": {"content": str(item_name)}}]},
+            "Type": {"rich_text": [{"text": {"content": str(item_type or 'N/A')}}]},
+            "Status": {"rich_text": [{"text": {"content": str(status or 'N/A')}}]},
+            "Taken By": {"rich_text": [{"text": {"content": str(taken_by or 'N/A')}}]},
+            "From": {"rich_text": [{"text": {"content": str(from_ or 'N/A')}}]},
+            "To": {"rich_text": [{"text": {"content": str(to_ or 'N/A')}}]},
+            "Date Taken": {"date": {"start": iso_timestamp}},
         }
     }
     try:
@@ -165,7 +166,7 @@ def run_backend_logic(app):
             print(f"{Fore.RED}No item found with tag: {item_id}{Style.RESET_ALL}")
             time.sleep(2)
             continue
-        print(f"Found Item: {item['item_name']} [Status: {item['status']}]")
+        print(f"Found Item: {item['item_id']} [Status: {item['status']}]")
 
         print(Fore.CYAN + "Scan User Badge: ")
         user_id = app.wait_for_scan(timeout=15)
@@ -182,34 +183,40 @@ def run_backend_logic(app):
             time.sleep(2)
             continue
 
-        print(f"Found User: {user['name']} [Access Level: {user['access_level']}]")
+        print(f"Found User: {user['name']}")
 
-        log = cur.execute("SELECT * FROM logs WHERE item_name=? ORDER BY timestamp DESC", (item['item_name'],)).fetchone()
+        log = cur.execute("SELECT * FROM logs WHERE item_id =? ORDER BY timestamp DESC", (item['item_id'],)).fetchone()
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         match item['status']:
-            case 'In Storage':
-                if user['access_level'] < item['access_level']:
-                    app.root.after(0, lambda: app.show_error("You don't have access to borrow this item"))
-                else:
-                    app.selection_ready.clear()
-                    app.root.after(0, lambda: app.show_destination_menu('BORROWED'))
-                    
-                    if not app.selection_ready.wait(timeout=30):
-                        print(f"{Fore.RED}User interaction timeout.{Style.RESET_ALL}")
-                        app.root.after(0, app.show_standby_screen)
-                        continue
-                    
-                    dest = app.chosen_destination
-                    cur.execute("UPDATE inventory SET status=?, destination=? WHERE rfid=?", (dest, dest, item['rfid']))
-                    cur.execute("INSERT INTO logs VALUES(?, ?, ?, ?)", (current_time, item['item_name'], user['name'], 'BORROWED'))
-                    con.commit()
-                    
-                    print(f"{Fore.GREEN}Item Borrowed Successfully to {dest}{Style.RESET_ALL}")
-                    app.root.after(0, lambda d=dest: app.flash_success(f"Item checked out to {d}!"))
-                    sync_to_notion(item['item_name'], item['type'], dest, user['name'], 'BORROWED', current_time)
+            case 'Available':
+                app.selection_ready.clear()
+                app.root.after(0, lambda: app.show_destination_menu('Borrowing'))
+                
+                if not app.selection_ready.wait(timeout=30):
+                    print(f"{Fore.RED}User interaction timeout.{Style.RESET_ALL}")
+                    app.root.after(0, app.show_standby_screen)
+                    continue
+                
+                dest = app.chosen_destination
+                previous_dest = item['current_location'] or 'N/A'
 
-            case _:
+                cur.execute("UPDATE inventory SET status=?, current_location=? WHERE rfid=?", ('Allocated', dest, item['rfid']))
+                cur.execute("INSERT INTO logs VALUES(?, ?, ?, ?)", (current_time, item['item_id'], user['name'], 'Borrow'))
+                con.commit()
+
+                app.root.after(0, lambda d=dest: app.flash_success(f"Item checked out to {d}!"))
+                
+                # Correct non-blocking thread invocation with real variables:
+                threading.Thread(
+                    target=sync_to_notion, 
+                    args=(item['item_id'], item['type'], 'Allocated', user['name'], previous_dest, dest, current_time), 
+                    daemon=True
+                ).start()
+
+                print(f"{Fore.GREEN}Item Borrowed Successfully to {dest}{Style.RESET_ALL}")
+                
+            case 'Allocated':
                 if not log:
                     app.root.after(0, lambda: app.show_error("No active log entry found for this item"))
                     print(f"{Fore.RED}System Error: No active log entry found{Style.RESET_ALL}")
@@ -217,7 +224,7 @@ def run_backend_logic(app):
                     app.root.after(0, lambda: app.show_error("Wrong User tried returning item"))
                 else:
                     app.selection_ready.clear()
-                    app.root.after(0, lambda: app.show_destination_menu('RETURNED'))
+                    app.root.after(0, lambda: app.show_destination_menu('Returning'))
                     
                     if not app.selection_ready.wait(timeout=30):
                         print(f"{Fore.RED}User interaction timeout.{Style.RESET_ALL}")
@@ -225,13 +232,24 @@ def run_backend_logic(app):
                         continue
                         
                     dest = app.chosen_destination
-                    cur.execute("UPDATE inventory SET status='In Storage', destination=? WHERE rfid=?", (dest, item['rfid']))
-                    cur.execute("INSERT INTO logs VALUES(?,?,?,?)", (current_time, item['item_name'], user['name'], 'RETURNED'))
+                    previous_dest = item['current_location'] or 'N/A'
+
+                    cur.execute("UPDATE inventory SET status='Available', current_location=? WHERE rfid=?", (dest, item['rfid']))
+                    cur.execute("INSERT INTO logs VALUES(?,?,?,?)", (current_time, item['item_id'], user['name'], 'RETURNED'))
                     con.commit()
-                    
-                    print(f"{Fore.GREEN}Item Returned Successfully to {dest}{Style.RESET_ALL}")
+
                     app.root.after(0, lambda d=dest: app.flash_success(f"Item returned safely to {d}!"))
-                    sync_to_notion(item['item_name'], item['type'], dest, user['name'], 'RETURNED', current_time)
+                    
+                    # Correct non-blocking thread invocation with real variables:
+                    threading.Thread(
+                        target=sync_to_notion, 
+                        args=(item['item_id'], item['type'], 'Available', user['name'], previous_dest, dest, current_time), 
+                        daemon=True
+                    ).start()
+
+                    print(f"{Fore.GREEN}Item Returned Successfully to {dest}{Style.RESET_ALL}")
+        
+        app.chosen_destination = None
         time.sleep(2)
 
 def main():
