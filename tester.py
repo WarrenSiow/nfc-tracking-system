@@ -87,6 +87,11 @@ class KioskApp:
         tk.Label(self.view_frame, text="⚙️ System Ready", font=("Helvetica", 32, "bold"), fg="#a6e3a1", bg="#1e1e2e").pack(pady=100)
         tk.Label(self.view_frame, text="Scan Item Tag on the Reader to Begin...", font=("Helvetica", 18), fg="#cdd6f4", bg="#1e1e2e").pack(pady=10)
 
+    def user_scan_screen(self):
+        self.clear_view()
+        tk.Label(self.view_frame, text="⚙️ You're Almost There", font=("Helvetica", 32, "bold"), fg="#a6e3a1", bg="#1e1e2e").pack(pady=100)
+        tk.Label(self.view_frame, text="Scan User Tag on the Reader...", font=("Helvetica", 18), fg="#cdd6f4", bg="#1e1e2e").pack(pady=10)
+
     def show_error(self, msg):
         self.clear_view()
         tk.Label(self.view_frame, text=msg, font=("Helvetica", 32, "bold"), fg="#f38ba8", bg="#1e1e2e").pack(pady=100)
@@ -124,28 +129,54 @@ class KioskApp:
         self.show_standby_screen()
 
 # --- Cloud Sync Engine ---
-def sync_to_notion(item_name, item_type, status, taken_by, from_, to_, timestamp):
-    url = "https://api.notion.com/v1/pages"
-    iso_timestamp = timestamp.replace(" ", "T")
+def sync_to_notion(item_id, item_type, status, taken_by, from_, to_, timestamp):
 
-    payload = {
-        "parent": {"database_id": DATABASE_ID},
-        "properties": {
-            "Item ID": {"title": [{"text": {"content": str(item_name)}}]},
-            "Type": {"rich_text": [{"text": {"content": str(item_type or 'N/A')}}]},
-            "Status": {"rich_text": [{"text": {"content": str(status or 'N/A')}}]},
-            "Taken By": {"rich_text": [{"text": {"content": str(taken_by or 'N/A')}}]},
-            "From": {"rich_text": [{"text": {"content": str(from_ or 'N/A')}}]},
-            "To": {"rich_text": [{"text": {"content": str(to_ or 'N/A')}}]},
-            "Date Taken": {"date": {"start": iso_timestamp}},
+    query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+    query_payload = {
+        "filter": {
+            "property": "Item Id",
+            "title": {
+                "equals": str(item_id)
+            }
         }
     }
+
+    iso_timestamp = timestamp.replace(" ", "T")
+
     try:
-        response = requests.post(url, headers=HEADERS, json=payload, timeout=5)
-        if response.status_code == 200:
-            print(f"{Fore.GREEN}Successfully synced to Notion{Style.RESET_ALL}")
-        else: 
-            print(f"{Fore.YELLOW}Cloud sync failed. Notion Error: {response.text}{Style.RESET_ALL}")
+        query_response = requests.post(query_url, json = query_payload, headers=HEADERS, timeout = 5)
+
+        if query_response.status_code == 200:
+            results = query_response.json().get("results", [])
+
+            if not results:
+                print(f"{Fore.YELLOW}Item '{item_id}' not found in the database.{Style.RESET_ALL}")
+                return
+
+            page_id = results[0]["id"]
+
+            update_url = f"https://api.notion.com/v1/pages/{page_id}"
+
+            update_payload = {
+                "properties": {
+                    "Item Id": {"title": [{"text": {"content": str(item_id)}}]},
+                    "Type": {"select": {"name": str(item_type or 'N/A')}},
+                    "Status": {"select": {"name": str(status or 'N/A')}},
+                    "Taken By": {"select": {"name": str(taken_by or 'N/A')}},
+                    "From": {"select": {"name": str(from_ or 'N/A')}},
+                    "To": {"select": {"name": str(to_ or 'N/A')}},
+                    "Date Taken": {"date": {"start": iso_timestamp}},
+                }
+            }
+
+            patch_response = requests.patch(update_url, headers=HEADERS, json=update_payload, timeout=5)
+
+            if patch_response.status_code == 200:
+                print(f"{Fore.GREEN}Successfully update Notion for {item_id}{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.RED}Failed to update Notion. Error: {patch_response.text}{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.RED}Failed to query Notion. Error: {query_response.text}{Style.RESET_ALL}")
     except Exception as e:
         print(f"{Fore.RED}Error syncing to Notion: {e}{Style.RESET_ALL}")
 
@@ -168,6 +199,8 @@ def run_backend_logic(app):
             continue
         print(f"Found Item: {item['item_id']} [Status: {item['status']}]")
 
+        app.root.after(0, app.user_scan_screen)
+
         print(Fore.CYAN + "Scan User Badge: ")
         user_id = app.wait_for_scan(timeout=15)
         if not user_id:
@@ -184,7 +217,7 @@ def run_backend_logic(app):
             continue
 
         print(f"Found User: {user['name']}")
-
+        
         log = cur.execute("SELECT * FROM logs WHERE item_id =? ORDER BY timestamp DESC", (item['item_id'],)).fetchone()
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
