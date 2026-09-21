@@ -92,11 +92,6 @@ class KioskApp:
         tk.Label(self.view_frame, text="⚙️ You're Almost There", font=("Helvetica", 32, "bold"), fg="#a6e3a1", bg="#1e1e2e").pack(pady=100)
         tk.Label(self.view_frame, text="Scan User Tag on the Reader...", font=("Helvetica", 18), fg="#cdd6f4", bg="#1e1e2e").pack(pady=10)
 
-    def show_error(self, msg):
-        self.clear_view()
-        tk.Label(self.view_frame, text=msg, font=("Helvetica", 32, "bold"), fg="#f38ba8", bg="#1e1e2e").pack(pady=100)
-        self.root.after(3000, self.show_standby_screen)
-
     def show_destination_menu(self, mode):
         self.clear_view()
 
@@ -126,6 +121,10 @@ class KioskApp:
 
     def flash_success(self, msg):
         messagebox.showinfo("Success", msg)
+        self.show_standby_screen()
+
+    def flash_failure(self, msg):
+        messagebox.showerror("Error", msg)
         self.show_standby_screen()
 
 # --- Cloud Sync Engine ---
@@ -193,7 +192,7 @@ def run_backend_logic(app):
         item = cur.execute("SELECT * FROM inventory WHERE rfid=?", (item_id,)).fetchone()
 
         if not item:
-            app.root.after(0, lambda: app.show_error("No item found with this tag"))
+            app.root.after(0, lambda: app.flash_failure("No item found with this tag"))
             print(f"{Fore.RED}No item found with tag: {item_id}{Style.RESET_ALL}")
             time.sleep(2)
             continue
@@ -211,7 +210,7 @@ def run_backend_logic(app):
         user = cur.execute("SELECT * FROM user WHERE id=?", (user_id,)).fetchone()
 
         if not user:
-            app.root.after(0, lambda: app.show_error("No authorized \nuser found"))
+            app.root.after(0, lambda: app.flash_failure("No authorized user found"))
             print(f"{Fore.RED}No authorized user found with badge: {user_id}{Style.RESET_ALL}")
             time.sleep(2)
             continue
@@ -251,10 +250,10 @@ def run_backend_logic(app):
                 
             case 'Allocated':
                 if not log:
-                    app.root.after(0, lambda: app.show_error("No active log entry\nfound for\nthis item"))
+                    app.root.after(0, lambda: app.flash_failure("No active log entry found for this item"))
                     print(f"{Fore.RED}System Error: No active log entry found{Style.RESET_ALL}")
                 elif log['user_name'] != user['name']:
-                    app.root.after(0, lambda: app.show_error("Wrong User"))
+                    app.root.after(0, lambda: app.flash_failure("Wrong user tried returning this item"))
                 else:
                     app.selection_ready.clear()
                     app.root.after(0, lambda: app.show_destination_menu('Returning'))
