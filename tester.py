@@ -183,7 +183,7 @@ def sync_to_notion(item_id, item_type, status, taken_by, from_, to_, timestamp):
 def run_backend_logic(app):
     while True:        
         print(Fore.BLUE + "\n--- NFC Inventory Management System ---")
-        print("Waiting for Item Scan (Scan on focused Kiosk Window)...")
+        print("Waiting for Item Scan\n(Scan on focused Kiosk Window)...")
         
         # Capture Item Tag via Tkinter Event Listener
         item_id = app.wait_for_scan(timeout=60)
@@ -211,7 +211,7 @@ def run_backend_logic(app):
         user = cur.execute("SELECT * FROM user WHERE id=?", (user_id,)).fetchone()
 
         if not user:
-            app.root.after(0, lambda: app.show_error("No authorized user found with this badge"))
+            app.root.after(0, lambda: app.show_error("No authorized \nuser found"))
             print(f"{Fore.RED}No authorized user found with badge: {user_id}{Style.RESET_ALL}")
             time.sleep(2)
             continue
@@ -251,10 +251,10 @@ def run_backend_logic(app):
                 
             case 'Allocated':
                 if not log:
-                    app.root.after(0, lambda: app.show_error("No active log entry found for this item"))
+                    app.root.after(0, lambda: app.show_error("No active log entry\nfound for\nthis item"))
                     print(f"{Fore.RED}System Error: No active log entry found{Style.RESET_ALL}")
                 elif log['user_name'] != user['name']:
-                    app.root.after(0, lambda: app.show_error("Wrong User tried returning item"))
+                    app.root.after(0, lambda: app.show_error("Wrong User"))
                 else:
                     app.selection_ready.clear()
                     app.root.after(0, lambda: app.show_destination_menu('Returning'))
