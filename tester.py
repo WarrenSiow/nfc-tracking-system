@@ -100,9 +100,9 @@ class KioskApp:
         
         tk.Label(self.view_frame, text="Scan next item tag or press Select Location below...", font=("Helvetica", 14), fg="#cdd6f4", bg="#1e1e2e").pack(pady=5)
 
-        # Scanned Items List View
+        # Scanned Items List View (WIDER CONTAINER: padx reduced from 150 to 50)
         list_frame = tk.Frame(self.view_frame, bg="#313244", bd=2, relief="solid")
-        list_frame.pack(pady=10, fill="both", expand=True, padx=150)
+        list_frame.pack(pady=10, fill="both", expand=True, padx=50)
 
         scrollbar = tk.Scrollbar(list_frame)
         scrollbar.pack(side="right", fill="y")
