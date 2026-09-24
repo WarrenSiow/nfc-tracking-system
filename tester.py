@@ -8,8 +8,8 @@ import tkinter as tk
 from tkinter import messagebox
 
 # --- Credentials ---
-NOTION_TOKEN = "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"
-DATABASE_ID = "372c2c61e2bb80709de3d2e0349661c3"
+NOTION_TOKEN = "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"
+DATABASE_ID = "2e55f987cbe68029a2c6e051873b4649"
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -24,7 +24,7 @@ con = sqlite3.connect("inventory.db", check_same_thread=False)
 con.row_factory = sqlite3.Row
 cur = con.cursor()
 
-cur.execute("CREATE TABLE IF NOT EXISTS inventory(rfid TEXT PRIMARY KEY, item_id TEXT, type TEXT, status TEXT, current_location TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS inventory(rfid TEXT PRIMARY KEY, item_id TEXT, status TEXT, current_location TEXT)")
 cur.execute("CREATE TABLE IF NOT EXISTS user(id TEXT PRIMARY KEY, name TEXT)")
 cur.execute("CREATE TABLE IF NOT EXISTS logs(timestamp TEXT, item_id TEXT, user_name TEXT, action TEXT)")
 con.commit()
@@ -38,8 +38,8 @@ class KioskApp:
         self.root.configure(bg="#1e1e2e")
 
         # Runtime Data Context
-        self.active_item = None
         self.active_user = None
+        self.scanned_items = []
         self.selection_ready = threading.Event()
         self.chosen_destination = None
 
@@ -72,7 +72,7 @@ class KioskApp:
             self.scan_buffer += event.char
 
     def wait_for_scan(self, timeout=30):
-        """Thread-safe wait for next tag scan from focused GUI window."""
+        """Thread-safe wait for next tag scan or GUI action button click."""
         self.scan_ready_event.clear()
         if self.scan_ready_event.wait(timeout=timeout):
             return self.latest_scanned_tag
@@ -84,18 +84,74 @@ class KioskApp:
 
     def show_standby_screen(self):
         self.clear_view()
+        self.scanned_items = []
         tk.Label(self.view_frame, text="⚙️ System Ready", font=("Helvetica", 32, "bold"), fg="#a6e3a1", bg="#1e1e2e").pack(pady=100)
-        tk.Label(self.view_frame, text="Scan Item Tag on the Reader to Begin...", font=("Helvetica", 18), fg="#cdd6f4", bg="#1e1e2e").pack(pady=10)
-
-    def user_scan_screen(self):
-        self.clear_view()
-        tk.Label(self.view_frame, text="⚙️ You're Almost There", font=("Helvetica", 32, "bold"), fg="#a6e3a1", bg="#1e1e2e").pack(pady=100)
         tk.Label(self.view_frame, text="Scan User Tag on the Reader...", font=("Helvetica", 18), fg="#cdd6f4", bg="#1e1e2e").pack(pady=10)
+
+    def item_scan_screen(self, user_name, items_list):
+        self.clear_view()
+        
+        # User Header & Item Counter Display
+        tk.Label(self.view_frame, text=f"👤 User: {user_name}", font=("Helvetica", 20, "bold"), fg="#89b4fa", bg="#1e1e2e").pack(pady=(20, 5))
+        
+        count = len(items_list)
+        counter_fg = "#f38ba8" if count >= 20 else "#a6e3a1"
+        tk.Label(self.view_frame, text=f"Items Scanned: {count} / 20", font=("Helvetica", 28, "bold"), fg=counter_fg, bg="#1e1e2e").pack(pady=10)
+        
+        tk.Label(self.view_frame, text="Scan next item tag or press Select Location below...", font=("Helvetica", 14), fg="#cdd6f4", bg="#1e1e2e").pack(pady=5)
+
+        # Scanned Items List View
+        list_frame = tk.Frame(self.view_frame, bg="#313244", bd=2, relief="solid")
+        list_frame.pack(pady=10, fill="both", expand=True, padx=150)
+
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        items_box = tk.Listbox(
+            list_frame, font=("Helvetica", 14), bg="#1e1e2e", fg="#f5e0dc",
+            selectbackground="#45475a", yscrollcommand=scrollbar.set, bd=0
+        )
+        
+        if not items_list:
+            items_box.insert(tk.END, "  (No items scanned yet)")
+        else:
+            for idx, item_obj in enumerate(items_list, start=1):
+                items_box.insert(tk.END, f"  {idx}. Item ID: {item_obj['item_id']}  [{item_obj['status']}]")
+
+        items_box.pack(fill="both", expand=True)
+        scrollbar.config(command=items_box.yview)
+
+        # Bottom Button Container (Side-by-Side)
+        button_container = tk.Frame(self.view_frame, bg="#1e1e2e")
+        button_container.pack(pady=15)
+
+        # Cancel Session Button (Red)
+        cancel_btn = tk.Button(
+            button_container, text="Cancel Session", font=("Helvetica", 14, "bold"),
+            bg="#f38ba8", fg="#1e1e2e", activebackground="#e8a2af", relief="flat",
+            width=18, height=2, command=lambda: self.submit_destination("CANCEL_SESSION")
+        )
+        cancel_btn.pack(side="left", padx=15)
+
+        # Select Location Button (Grayed out if empty, Green when items exist)
+        if items_list:
+            done_btn = tk.Button(
+                button_container, text="Select Location ➔", font=("Helvetica", 14, "bold"),
+                bg="#a6e3a1", fg="#1e1e2e", activebackground="#cdd6f4", relief="flat",
+                width=18, height=2, state="normal", command=lambda: self.submit_destination("FINISH_SCANNING")
+            )
+        else:
+            done_btn = tk.Button(
+                button_container, text="Select Location ➔", font=("Helvetica", 14, "bold"),
+                bg="#45475a", fg="#a6adc8", relief="flat",
+                width=18, height=2, state="disabled"
+            )
+        done_btn.pack(side="left", padx=15)
 
     def show_destination_menu(self, mode):
         self.clear_view()
 
-        title_text = "📍 Where is this item going?" if mode == 'Borrowing' else "📥 Where are you returning this item to?"
+        title_text = "📍 Where are these items going?" if mode == 'Borrowing' else "📥 Where are you returning these items to?"
         tk.Label(self.view_frame, text=title_text, font=("Helvetica", 24, "bold"), fg="#89b4fa", bg="#1e1e2e").pack(pady=30)
 
         grid_frame = tk.Frame(self.view_frame, bg="#1e1e2e")
@@ -115,9 +171,18 @@ class KioskApp:
             )
             btn.grid(row=row, column=col, padx=15, pady=15)
 
+        # Back / Return Button
+        back_btn = tk.Button(
+            self.view_frame, text="⬅ Back to Item Scan", font=("Helvetica", 12, "bold"),
+            bg="#45475a", fg="#cdd6f4", activebackground="#585b70", activeforeground="#f5e0dc",
+            relief="flat", width=22, height=2, command=lambda: self.submit_destination("GO_BACK")
+        )
+        back_btn.pack(pady=(10, 25))
+
     def submit_destination(self, dest):
         self.chosen_destination = dest
         self.selection_ready.set()
+        self.scan_ready_event.set()  # Unblock wait_for_scan immediately on button click
 
     def flash_success(self, msg):
         messagebox.showinfo("Success", msg)
@@ -128,12 +193,11 @@ class KioskApp:
         self.show_standby_screen()
 
 # --- Cloud Sync Engine ---
-def sync_to_notion(item_id, item_type, status, taken_by, from_, to_, timestamp):
-
+def sync_to_notion(item_id, status, taken_by, from_, to_, timestamp):
     query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
     query_payload = {
         "filter": {
-            "property": "Item Id",
+            "property": "Item ID",
             "title": {
                 "equals": str(item_id)
             }
@@ -143,7 +207,7 @@ def sync_to_notion(item_id, item_type, status, taken_by, from_, to_, timestamp):
     iso_timestamp = timestamp.replace(" ", "T")
 
     try:
-        query_response = requests.post(query_url, json = query_payload, headers=HEADERS, timeout = 5)
+        query_response = requests.post(query_url, json=query_payload, headers=HEADERS, timeout=5)
 
         if query_response.status_code == 200:
             results = query_response.json().get("results", [])
@@ -153,15 +217,13 @@ def sync_to_notion(item_id, item_type, status, taken_by, from_, to_, timestamp):
                 return
 
             page_id = results[0]["id"]
-
             update_url = f"https://api.notion.com/v1/pages/{page_id}"
 
             update_payload = {
                 "properties": {
-                    "Item Id": {"title": [{"text": {"content": str(item_id)}}]},
-                    "Type": {"select": {"name": str(item_type or 'N/A')}},
+                    "Item ID": {"title": [{"text": {"content": str(item_id)}}]},
                     "Status": {"select": {"name": str(status or 'N/A')}},
-                    "Taken By": {"select": {"name": str(taken_by or 'N/A')}},
+                    "Taken By": {"rich_text": [{"text": {"content": str(taken_by or 'N/A')}}]},
                     "From": {"select": {"name": str(from_ or 'N/A')}},
                     "To": {"select": {"name": str(to_ or 'N/A')}},
                     "Date Taken": {"date": {"start": iso_timestamp}},
@@ -171,7 +233,7 @@ def sync_to_notion(item_id, item_type, status, taken_by, from_, to_, timestamp):
             patch_response = requests.patch(update_url, headers=HEADERS, json=update_payload, timeout=5)
 
             if patch_response.status_code == 200:
-                print(f"{Fore.GREEN}Successfully update Notion for {item_id}{Style.RESET_ALL}")
+                print(f"{Fore.GREEN}Successfully updated Notion for {item_id}{Style.RESET_ALL}")
             else:
                 print(f"{Fore.RED}Failed to update Notion. Error: {patch_response.text}{Style.RESET_ALL}")
         else:
@@ -182,26 +244,9 @@ def sync_to_notion(item_id, item_type, status, taken_by, from_, to_, timestamp):
 def run_backend_logic(app):
     while True:        
         print(Fore.BLUE + "\n--- NFC Inventory Management System ---")
-        print("Waiting for Item Scan\n(Scan on focused Kiosk Window)...")
-        
-        # Capture Item Tag via Tkinter Event Listener
-        item_id = app.wait_for_scan(timeout=60)
-        if not item_id:
-            continue
+        print("Waiting for User Scan\n(Scan on focused Kiosk Window)...")
 
-        item = cur.execute("SELECT * FROM inventory WHERE rfid=?", (item_id,)).fetchone()
-
-        if not item:
-            app.root.after(0, lambda: app.flash_failure("No item found with this tag"))
-            print(f"{Fore.RED}No item found with tag: {item_id}{Style.RESET_ALL}")
-            time.sleep(2)
-            continue
-        print(f"Found Item: {item['item_id']} [Status: {item['status']}]")
-
-        app.root.after(0, app.user_scan_screen)
-
-        print(Fore.CYAN + "Scan User Badge: ")
-        user_id = app.wait_for_scan(timeout=15)
+        user_id = app.wait_for_scan(timeout=60)
         if not user_id:
             app.root.after(0, app.show_standby_screen)
             print(f"{Fore.RED}User scan timed out.{Style.RESET_ALL}")
@@ -217,71 +262,119 @@ def run_backend_logic(app):
 
         print(f"Found User: {user['name']}")
         
-        log = cur.execute("SELECT * FROM logs WHERE item_id =? ORDER BY timestamp DESC", (item['item_id'],)).fetchone()
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        match item['status']:
-            case 'Available':
-                app.selection_ready.clear()
-                app.root.after(0, lambda: app.show_destination_menu('Borrowing'))
-                
-                if not app.selection_ready.wait(timeout=30):
-                    print(f"{Fore.RED}User interaction timeout.{Style.RESET_ALL}")
-                    app.root.after(0, app.show_standby_screen)
+        # Initialize Scanning Session
+        scanned_items = []
+
+        while True:
+            app.selection_ready.clear()
+            app.chosen_destination = None
+            app.root.after(0, lambda: app.item_scan_screen(user['name'], scanned_items))
+
+            # --- Item Scanning Loop (Limit 20 Items) ---
+            while len(scanned_items) < 20:
+                scanned_tag = app.wait_for_scan(timeout=45)
+
+                # Check GUI button actions
+                if app.selection_ready.is_set():
+                    if app.chosen_destination == "FINISH_SCANNING":
+                        break
+                    elif app.chosen_destination == "CANCEL_SESSION":
+                        scanned_items = []
+                        break
+
+                if not scanned_tag:
+                    if not scanned_items:
+                        print(f"{Fore.RED}Item scanning timed out.{Style.RESET_ALL}")
+                    break
+
+                item = cur.execute("SELECT * FROM inventory WHERE rfid=?", (scanned_tag,)).fetchone()
+
+                if not item:
+                    print(f"{Fore.RED}No item found with tag: {scanned_tag}{Style.RESET_ALL}")
                     continue
-                
-                dest = app.chosen_destination
+
+                # Check for Duplicate Scans in Current Session
+                if any(i['rfid'] == item['rfid'] for i in scanned_items):
+                    print(f"{Fore.YELLOW}Item {item['item_id']} already scanned in this session.{Style.RESET_ALL}")
+                    continue
+
+                # Ensure all scanned items in a batch have matching operational status
+                if scanned_items and item['status'] != scanned_items[0]['status']:
+                    print(f"{Fore.RED}Cannot mix Available and Allocated items in one scan session!{Style.RESET_ALL}")
+                    continue
+
+                # Validate Allocated Items (User Authorization Check)
+                if item['status'] == 'Allocated':
+                    log = cur.execute("SELECT * FROM logs WHERE item_id=? ORDER BY timestamp DESC", (item['item_id'],)).fetchone()
+                    if not log or log['user_name'] != user['name']:
+                        app.root.after(0, lambda: app.flash_failure(f"Wrong user tried returning item: {item['item_id']}"))
+                        print(f"{Fore.RED}Unauthorized return attempt for item {item['item_id']}{Style.RESET_ALL}")
+                        continue
+
+                # Add Item to Session List
+                scanned_items.append(dict(item))
+                print(f"Scanned Item ({len(scanned_items)}/20): {item['item_id']} [{item['status']}]")
+
+                # Refresh GUI List and Counter
+                app.root.after(0, lambda: app.item_scan_screen(user['name'], scanned_items))
+
+                # Stop scanning automatically if limit reached
+                if len(scanned_items) == 20:
+                    print(f"{Fore.YELLOW}Reached maximum limit of 20 items.{Style.RESET_ALL}")
+                    break
+
+            if not scanned_items:
+                app.root.after(0, app.show_standby_screen)
+                break
+
+            # --- Destination Selection Phase ---
+            session_mode = 'Borrowing' if scanned_items[0]['status'] == 'Available' else 'Returning'
+            app.selection_ready.clear()
+            app.chosen_destination = None
+            app.root.after(0, lambda: app.show_destination_menu(session_mode))
+
+            if not app.selection_ready.wait(timeout=30) or not app.chosen_destination:
+                print(f"{Fore.RED}Destination selection timed out.{Style.RESET_ALL}")
+                app.root.after(0, app.show_standby_screen)
+                break
+
+            # If user clicks "Back to Item Scan", loop back to item_scan_screen
+            if app.chosen_destination == "GO_BACK":
+                continue
+
+            dest = app.chosen_destination
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # --- Process Database Updates and Async Notion Sync ---
+            for item in scanned_items:
                 previous_dest = item['current_location'] or 'N/A'
 
-                cur.execute("UPDATE inventory SET status=?, current_location=? WHERE rfid=?", ('Allocated', dest, item['rfid']))
-                cur.execute("INSERT INTO logs VALUES(?, ?, ?, ?)", (current_time, item['item_id'], user['name'], 'Borrow'))
-                con.commit()
-
-                app.root.after(0, lambda d=dest: app.flash_success(f"Item checked out to {d}!"))
-                
-                # Correct non-blocking thread invocation with real variables:
-                threading.Thread(
-                    target=sync_to_notion, 
-                    args=(item['item_id'], item['type'], 'Allocated', user['name'], previous_dest, dest, current_time), 
-                    daemon=True
-                ).start()
-
-                print(f"{Fore.GREEN}Item Borrowed Successfully to {dest}{Style.RESET_ALL}")
-                
-            case 'Allocated':
-                if not log:
-                    app.root.after(0, lambda: app.flash_failure("No active log entry found for this item"))
-                    print(f"{Fore.RED}System Error: No active log entry found{Style.RESET_ALL}")
-                elif log['user_name'] != user['name']:
-                    app.root.after(0, lambda: app.flash_failure("Wrong user tried returning this item"))
-                else:
-                    app.selection_ready.clear()
-                    app.root.after(0, lambda: app.show_destination_menu('Returning'))
-                    
-                    if not app.selection_ready.wait(timeout=30):
-                        print(f"{Fore.RED}User interaction timeout.{Style.RESET_ALL}")
-                        app.root.after(0, app.show_standby_screen)
-                        continue
-                        
-                    dest = app.chosen_destination
-                    previous_dest = item['current_location'] or 'N/A'
-
-                    cur.execute("UPDATE inventory SET status='Available', current_location=? WHERE rfid=?", (dest, item['rfid']))
-                    cur.execute("INSERT INTO logs VALUES(?,?,?,?)", (current_time, item['item_id'], user['name'], 'RETURNED'))
+                if session_mode == 'Borrowing':
+                    cur.execute("UPDATE inventory SET status=?, current_location=? WHERE rfid=?", ('Allocated', dest, item['rfid']))
+                    cur.execute("INSERT INTO logs VALUES(?, ?, ?, ?)", (current_time, item['item_id'], user['name'], 'Borrow'))
                     con.commit()
 
-                    app.root.after(0, lambda d=dest: app.flash_success(f"Item returned safely to {d}!"))
-                    
-                    # Correct non-blocking thread invocation with real variables:
                     threading.Thread(
                         target=sync_to_notion, 
-                        args=(item['item_id'], item['type'], 'Available', user['name'], previous_dest, dest, current_time), 
+                        args=(item['item_id'], 'Allocated', user['name'], previous_dest, dest, current_time), 
+                        daemon=True
+                    ).start()
+                else:
+                    cur.execute("UPDATE inventory SET status='Available', current_location=? WHERE rfid=?", (dest, item['rfid']))
+                    cur.execute("INSERT INTO logs VALUES(?, ?, ?, ?)", (current_time, item['item_id'], user['name'], 'RETURNED'))
+                    con.commit()
+
+                    threading.Thread(
+                        target=sync_to_notion, 
+                        args=(item['item_id'], 'Available', user['name'], previous_dest, dest, current_time), 
                         daemon=True
                     ).start()
 
-                    print(f"{Fore.GREEN}Item Returned Successfully to {dest}{Style.RESET_ALL}")
-        
-        app.chosen_destination = None
+            action_msg = "borrowed to" if session_mode == 'Borrowing' else "returned to"
+            app.root.after(0, lambda d=dest, c=len(scanned_items): app.flash_success(f"Successfully {action_msg} {d} ({c} items)!"))
+            print(f"{Fore.GREEN}Processed {len(scanned_items)} items successfully to {dest}.{Style.RESET_ALL}")
+            break
+
         time.sleep(2)
 
 def main():
