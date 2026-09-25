@@ -8,6 +8,8 @@ import tkinter as tk
 from tkinter import messagebox
 
 # --- Credentials ---
+NOTION_TOKEN = "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"
+DATABASE_ID = "2e55f987cbe68029a2c6e051873b4649"
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -221,7 +223,7 @@ def sync_to_notion(item_id, status, taken_by, from_, to_, timestamp):
                 "properties": {
                     "Item ID": {"title": [{"text": {"content": str(item_id)}}]},
                     "Status": {"select": {"name": str(status or 'N/A')}},
-                    "Taken By": {"rich_text": [{"text": {"content": str(taken_by or 'N/A')}}]},
+                    "Taken By": {"select": {"name": str(taken_by or 'N/A')}},
                     "From": {"select": {"name": str(from_ or 'N/A')}},
                     "To": {"select": {"name": str(to_ or 'N/A')}},
                     "Date Taken": {"date": {"start": iso_timestamp}},
