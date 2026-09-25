@@ -8,8 +8,6 @@ import tkinter as tk
 from tkinter import messagebox
 
 # --- Credentials ---
-NOTION_TOKEN = "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"
-DATABASE_ID = "2e55f987cbe68029a2c6e051873b4649"
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
